@@ -1,0 +1,397 @@
+---
+title: "Name and Type Examination"
+author: "Matthew Palmeri"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = T, fig.height = 4, fig.width = 14)
+require(here)
+require(magrittr)
+require(dplyr)
+require(ggplot2)
+require(gridExtra)
+require(tidyr)
+
+name_type_function <- function(data, type_str) {
+  data %>%
+  filter(type == type_str) %>%
+  ggplot(aes(x = xadjcoord, y = yadjcoord)) + geom_point() +
+  labs(title = type_str) + xlim(-100,100) + theme_classic() +
+  geom_vline(xintercept = 25, color = 'blue', size = 2) + geom_vline(xintercept = 0, color = 'red', size = 2) +
+  geom_vline(xintercept = -25, color = 'blue', size = 2) + theme(plot.title = element_text(hjust=0.5))
+}
+```
+
+```{r, data, eval = F, echo = T}
+Games <- read.csv(here('Data', 'game_info.csv'))
+Players <- read.csv(here('Data', 'player_info.csv'))
+Teams <- read.csv(here('Data', 'team_info.csv'))
+
+
+game_ids <- unique(Games$gameid)
+Events <- data.frame()
+for (game in game_ids) {
+  temp <- read.csv(here('Data', 'games', paste0(game, '-events.csv'))) %>%
+    mutate(gameid = game) %>%
+    select(gameid, period:expectedgoals)
+  if (nrow(Events) == 0) {
+    Events <- temp
+  } else {
+    Events <- rbind(Events, temp)
+  }
+}
+Events <- Events %>%
+  mutate(eventid = seq(1, nrow(.)),
+         name = as.character(name),
+         type = as.character(type)) %>%
+  select(eventid, gameid:expectedgoals)
+
+name_type_function <- function(data, type_str) {
+  data %>%
+  filter(type == type_str) %>%
+  ggplot(aes(x = xadjcoord, y = yadjcoord)) + geom_point() +
+  labs(title = type_str) + xlim(-100,100) + theme_classic() +
+  geom_vline(xintercept = 25, color = 'blue', size = 2) + geom_vline(xintercept = 0, color = 'red', size = 2) +
+  geom_vline(xintercept = -25, color = 'blue', size = 2) + theme(plot.title = element_text(hjust=0.5))
+}
+```
+
+# Introduction
+
+To be able to properly use the information included in the SportLogiq spatiotemporal data, we have to understand the classification of events. We'll start with just exploring the distribution of event names. 
+
+```{r}
+table(Events$name)
+```
+
+### Assists
+
+```{r, assists}
+assist <- filter(Events, name == 'assist')
+table(assist$type, assist$outcome)
+```
+
+Standard primary/secondary assist breakdown
+
+### Blocks
+
+```{r, blocks}
+block <- filter(Events, name == 'block')
+table(block$type, block$outcome)
+
+a <- name_type_function(block, 'blueline')
+b <- name_type_function(block, 'pass')
+c <- name_type_function(block, 'shot')
+grid.arrange(a,b,c, ncol = 3)
+```
+
+Investigating what a blueline block is
+
+ * Play that preceeds blueline block:
+    * Could be associated with a keep-in along the blueline (see a lot of dumpout events)
+ 
+```{r}
+a <- grep('blueline', Events$type) - 1
+table(Events[a,'name'])
+```
+
+ * failed vs successful block
+   * Possession gained, or didn't block (attempted block)?
+
+```{r, eval = F, echo = F}
+k <- 5000
+eventids <- block$eventid[1:k]
+Possession_check <- data.frame(eventid = eventids, pre_block = numeric(k), 
+                               post_block = numeric(k))
+ids <- eventids %>%
+  c(.-5, .-4, .-3, .-2, .-1, ., .+1, .+2, .+3, .+4, .+5) %>%
+  unique() %>%
+  sort()
+#this is so that the while loops exits properly
+eventids <- append(eventids, 10000000)
+For_Possession <- Events[ids,]
+current_num <- 1
+while(nrow(For_Possession) != 0) {
+  Pre <- For_Possession[1:5, 'teamid'] %>%
+    table() %>%
+    which.max() %>%
+    names()
+  Post <- For_Possession[7:11, 'teamid'] %>%
+    table() %>%
+    which.max() %>%
+    names()
+  Possession_check[current_num, 'pre_block'] <- Pre
+  Possession_check[current_num, 'post_block'] <- Post
+  current_num <- current_num + 1
+  eventids <- eventids[-1]
+  For_Possession <- filter(For_Possession, eventid >= eventids[1] - 5)
+}
+temp <- Possession_check %>%
+  mutate(same_team = pre_block == post_block) %>%
+  select(eventid, same_team) %>%
+  inner_join(Events, ., by = 'eventid') %>%
+  select(type, outcome, same_team) %>%
+  group_by(type, outcome) %>%
+  summarise(Proportion_Same_Team = sum(!same_team)/n()) %>%
+  ungroup() %>%
+  spread(outcome, Proportion_Same_Team)
+```
+
+Below is an attempt to see the proportion of block events that led to a change in possession. To do this, we looked at the five events prior to the block, and the five events after the block to try to determine possession by looking at the team with the majority of events. The data is then broken down into the three different block types, and whether the block was deemed successful or not. 
+
+```{r}
+temp
+```
+
+### Carry
+
+```{r, carry}
+Carry <- filter(Events, name == 'carry')
+table(Carry$type)
+```
+
+No breakdowns for Carry. Seems to be associated with carries across both bluelines and the red line (with some strange outliers). Not sure what the spread of x-coordinates means around each of those lines. 
+
+```{r}
+Carry <- mutate(Carry, location = case_when(xadjcoord > -30 & xadjcoord < -20 ~ 'Defensive Blueline',
+                                   xadjcoord > -5 & xadjcoord < 5 ~ 'Redline',
+                                   xadjcoord > 20 & xadjcoord < 30 ~ 'Offensive Blueline',
+                                   TRUE ~ 'Other'))
+ggplot(Carry, aes(x = xadjcoord, y = yadjcoord)) + geom_point() +
+  geom_vline(xintercept = 25, color = 'blue', size = 2) + geom_vline(xintercept = 0, color = 'red', size = 2) +
+  geom_vline(xintercept = -25, color = 'blue', size = 2) + xlim(-100,100) + theme_classic()
+table(Carry$location)
+```
+
+
+### Check
+
+```{r, check}
+Check <- filter(Events, name == 'check')
+table(Check$type)
+```
+
+Body and Stick check breakdown.
+
+### Controlled Entry
+
+```{r, controlled entry}
+ControlledEntry <- filter(Events, name == 'controlledentry')
+table(ControlledEntry$type)
+```
+
+This is a really nice breakdown. Does the leg-work of seeing what happened during the possession tied to the controlled entry. 
+
+```{r}
+ControlledEntry <- mutate(ControlledEntry, Carry_Pass = if_else(grepl('carry', ControlledEntry$type),
+                                                                'Carry',
+                                                                'Pass'))
+table(ControlledEntry$Carry_Pass)
+```
+
+We also see that the Carry events tied to the offensive blueline from the section above seem to be tied to the Controlled Entry events defined as a carry (off by 15 on count, and don't feel like investigating what happened with the ones that aren't associated).
+
+Might want to dive deeper to see how a pass entry is defined (or ask SportLogiq if they can answer that) in terms of distance from the offensive blueline.
+
+### Controlled Entry Against
+
+```{r, controlled entry against}
+ControlledEntryAgainst <- filter(Events, name == 'controlledentryagainst')
+table(ControlledEntryAgainst$type)
+```
+
+This is another really nice breakdown for analysis, as we can see what the offensive vs defensive numbers were like. 
+
+One thing that we might want clarification on is whether this only gets applied to the player closest to the controlled entry (we see 3191 occurrences of 3on2, but 3191 isn't divisible by 2 as an example). 
+
+```{r, fig.height = 8}
+ControlledEntryAgainst <- mutate(ControlledEntryAgainst,
+                                 OffenseNumber = substr(type, 1, 1),
+                                 DefenseNumber = substr(type, 4, 4))
+ggplot(ControlledEntryAgainst, aes(x = xadjcoord, y = yadjcoord)) + 
+  geom_point() + geom_vline(xintercept = -25, color = 'blue', size = 2) + xlim(-100,100) +
+  geom_vline(xintercept = 25, color = 'blue', size = 2) + geom_vline(xintercept = 0, color = 'red', size = 2) +
+  geom_vline(xintercept = -25, color = 'blue', size = 2) + 
+  labs(title = 'Location of ControlledEntryAgainst events broken down by the number of defenders') +
+  theme_classic() + theme(plot.title = element_text(hjust=0.5)) + facet_wrap(~DefenseNumber, ncol = 2)
+```
+
+From this, it is hard to tell how this get assigned. We see in every subgraph, some of these ControlledEntryAgainst events get assigned to the goalie. Might want to look at a graph where we somehow associate the entry event with their cooresponding entry against event. However, it is very clear that these get assigned to players in front of the puck, as there are almost no ControlledEntryAgainst events outsides to defensive zone. 
+
+### Dump in
+
+```{r, dump in}
+DumpIn <- filter(Events, name == 'dumpin')
+table(DumpIn$type)
+```
+
+Chip/Dump classification is likely defined by how far the puck got into the zone, but unsure.
+
+### Dump in Against
+
+```{r, dump in against}
+DumpInAgainst <- filter(Events, name == 'dumpinagainst')
+table(DumpInAgainst$type)
+```
+
+No breakdown for dump in against.
+
+### Dump out
+
+```{r, dump out}
+DumpOut <- filter(Events, name == 'dumpout')
+table(DumpOut$type)
+```
+
+We see three variants of a dump-out, Boards (likely using the boards), flip (likely flipping the puck into the air above the defenseman along the offensive blueline), and ice (which likely means they iced the puck, although unable to verify). 
+
+### Faceoff
+
+```{r, faceoff}
+Faceoff <- filter(Events, name == 'faceoff')
+table(Faceoff$type)
+```
+
+In a similar fashion to entry events above, we get a nice breakdown based on what happens following the faceoff. 
+
+### Goal
+
+```{r, goal}
+Goal <- filter(Events, name == 'goal')
+table(Goal$type)
+```
+
+No breakdown for goals, which is expected. 
+
+### Goal Against
+
+```{r, goal against}
+GoalAgainst <- filter(Events, name == 'goalagainst')
+table(GoalAgainst$type)
+```
+
+```{r}
+GoalAgainst <- left_join(GoalAgainst, Players, by = 'playerid')
+table(GoalAgainst$primaryPosition)
+ggplot(GoalAgainst, aes(x = xadjcoord, y = yadjcoord)) + geom_point() + xlim(-100,100) +
+  geom_vline(xintercept = 25, color = 'blue', size = 2) + geom_vline(xintercept = 0, color = 'red', size = 2) +
+  geom_vline(xintercept = -25, color = 'blue', size = 2) + theme_classic()
+```
+
+My initial thought was that these events would only be tied to goalies (and would indicate the location of the goalie), but it looks like it indicates the location of the shot that scored on a goalie. Looks like 5 goals were scored on a goalie outside the offensive zone (ouch).
+
+### Icing
+
+```{r, icing}
+Icing <- filter(Events, name == 'icing')
+table(Icing$type)
+```
+
+```{r}
+ggplot(Icing, aes(x = xadjcoord, y = yadjcoord)) + geom_point() + xlim(-100,100) + 
+  geom_vline(xintercept = 25, color = 'blue', size = 2) + geom_vline(xintercept = 0, color = 'red', size = 2) +
+  geom_vline(xintercept = -25, color = 'blue', size = 2) + theme_classic()
+```
+
+We see some icing events that are on the offensive side of the red-line, which doesn't make a lot of sense; however, its less than 10, so doesn't seem like a big deal. interesting lack of icing events along the defensive blueline. Also really interesting to see the concentration of icings happening along the boards (makes sense though).
+
+### Loose Puck Recovery
+
+```{r, loose puck recovery}
+LPR <- filter(Events, name == 'lpr')
+table(LPR$type)
+```
+
+ * contested: loose puck was contested by the other team
+ * faceoff: loose puck off of a faceoff
+ * hipresopdump: no idea. this is restricted to defensive zone, but I don't know why
+ * nofore: I assume a puck recovered with no forecheck from the other team (also restricted to just the defensive zone like 'hipresopdump' above)
+ * opdump: no idea (probably related to hipresopdump in some way). This is restricted to outside the offensive zone (again don't know why without knowing what 'opdump' means). 
+ * rebound: loose puck off a rebound (both defensive and offensive zone). 
+ 
+```{r, fig.height=8}
+a <- name_type_function(LPR, 'hipresopdump')
+b <- name_type_function(LPR, 'nofore')
+c <- name_type_function(LPR, 'opdump')
+d <- name_type_function(LPR, 'rebound')
+grid.arrange(a,b,c,d, ncol = 2)
+```
+
+### Offside
+
+```{r, offside}
+Offside <- filter(Events, name == 'offside')
+table(Offside$type)
+```
+
+No breakdown for offside. Would have been potentially nice to know if it was offside on a zone entry, or on a keep-in, but if push comes to shove this can be done ourselves. 
+
+### Pass
+
+```{r, pass}
+Pass <- filter(Events, name == 'pass')
+table(Pass$type)
+```
+
+
+
+### Penalty
+
+```{r, penalty}
+Penalty <- filter(Events, name == 'penalty')
+table(Penalty$type)
+```
+
+Breakdown between undisciplined penalties and not. I don't know how they determine if a penalty was unwarranted (doesn't seem to be any correlation to location on the ice, as indicated below). We also don't get any indication of what the penalty was for. 
+
+```{r}
+ggplot(Penalty, aes(x = xadjcoord, y = yadjcoord, color = type)) + geom_point() + xlim(-100,100) + 
+  geom_vline(xintercept = 25, color = 'blue', size = 2) + geom_vline(xintercept = 0, color = 'red', size = 2) +
+  geom_vline(xintercept = -25, color = 'blue', size = 2) + theme_classic()
+```
+
+### Puck Protection
+
+```{r, puck protection}
+PuckProtection <- filter(Events, name == 'puckprotection')
+table(PuckProtection$type)
+```
+
+Almost four times as many deke compared to body puck protections. it seems that any deke would be placed as a puck protection, with success or failure indicated in the outcome column. 
+
+### Reception
+
+```{r, reception}
+Reception <- filter(Events, name == 'reception')
+table(Reception$type)
+```
+
+there are reception events with a 'failed' outcome. I don't know if this means that the player could have controlled the pass but didn't for some unforced reason, or something else. 
+
+### Save
+
+```{r, save}
+Save <- filter(Events, name == 'save')
+table(Save$type)
+```
+
+I assume the 'onfailedblock' means that a player attempted to block the shot but failed. 
+
+### Shot
+
+```{r, shot}
+Shot <- filter(Events, name == 'shot')
+table(Shot$type)
+```
+
+This includes all shots (missed shots have 'failed' for outcome), and broken down by whether or not the shot was in the slot or not.
+
+```{r}
+Shot <- mutate(Shot, slot = if_else(grepl('slot', Shot$type),
+                                    'slot',
+                                    'outside'))
+ggplot(Shot, aes(x = xadjcoord, y = yadjcoord, color = slot)) + geom_point() + xlim(-100,100) + 
+  geom_vline(xintercept = 25, color = 'blue', size = 2) + geom_vline(xintercept = 0, color = 'red', size = 2) +
+  geom_vline(xintercept = -25, color = 'blue', size = 2) + theme_classic()
+```
